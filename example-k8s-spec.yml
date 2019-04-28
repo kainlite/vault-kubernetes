@@ -1,0 +1,121 @@
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: vault-agent-example
+spec:
+  serviceAccountName: vault-auth
+
+  restartPolicy: Never
+
+  volumes:
+    - name: vault-token
+      emptyDir:
+        medium: Memory
+    - name: vault-tls
+      secret:
+        secretName: myapp
+
+    - name: config
+      configMap:
+        name: example-vault-agent-config
+        items:
+          - key: vault-agent-config.hcl
+            path: vault-agent-config.hcl
+
+          - key: consul-template-config.hcl
+            path: consul-template-config.hcl
+
+
+    - name: shared-data
+      emptyDir: {}
+
+  initContainers:
+    # Vault container
+    - name: vault-agent-auth
+      image: vault
+
+      volumeMounts:
+        - name: config
+          mountPath: /etc/vault
+        - name: vault-token
+          mountPath: /home/vault
+        - name: vault-tls
+          mountPath: /etc/tls
+
+      # This assumes Vault running on local host and K8s running in Minikube using VirtualBox
+      env:
+        - name: VAULT_ADDR
+          value: https://vault:8200
+        - name: VAULT_CACERT
+          value: /etc/tls/consul-agent-ca.pem
+        - name: VAULT_CLIENT_CERT
+          value: /etc/tls/dc1-client-consul-1.pem
+        - name: VAULT_CLIENT_KEY
+          value: /etc/tls/dc1-client-consul-1-key.pem
+        - name: VAULT_TLS_SERVER_NAME
+          value: client.dc1.consul
+
+      # Run the Vault agent
+      args:
+        [
+          "agent",
+          "-config=/etc/vault/vault-agent-config.hcl",
+          #"-log-level=debug",
+        ]
+
+  containers:
+    # Consul Template container
+    - name: consul-template
+      image: hashicorp/consul-template:alpine
+      imagePullPolicy: Always
+
+      volumeMounts:
+        - name: vault-token
+          mountPath: /home/vault
+
+        - name: config
+          mountPath: /etc/consul-template
+
+        - name: shared-data
+          mountPath: /etc/secrets
+
+        - name: vault-tls
+          mountPath: /etc/tls
+
+      env:
+        - name: HOME
+          value: /home/vault
+
+        - name: VAULT_ADDR
+          value: https://vault:8200
+
+        - name: VAULT_CACERT
+          value: /etc/tls/consul-agent-ca.pem
+
+        - name: VAULT_CLIENT_CERT
+          value: /etc/tls/dc1-client-consul-1.pem
+
+        - name: VAULT_CLIENT_KEY
+          value: /etc/tls/dc1-client-consul-1-key.pem
+
+        - name: VAULT_TLS_SERVER_NAME
+          value: client.dc1.consul
+
+      # Consul-Template looks in $HOME/.vault-token, $VAULT_TOKEN, or -vault-token (via CLI)
+      args:
+        [
+          "-config=/etc/consul-template/consul-template-config.hcl",
+          #"-log-level=debug",
+        ]
+
+    # Nginx container
+    - name: nginx-container
+      image: nginx
+
+      ports:
+        - containerPort: 80
+
+      volumeMounts:
+        - name: shared-data
+          mountPath: /usr/share/nginx/html
